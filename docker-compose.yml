@@ -1,0 +1,312 @@
+services:
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE}
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "${RABBITMQ_AMQP_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - platform-internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  postgres-commerce:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${COMMERCE_DB_NAME}
+      POSTGRES_USER: ${COMMERCE_DB_USER}
+      POSTGRES_PASSWORD: ${COMMERCE_DB_PASSWORD}
+    ports:
+      - "${COMMERCE_DB_PORT}:5432"
+    volumes:
+      - commerce-postgres-data:/var/lib/postgresql/data
+    networks:
+      - platform-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  postgres-logistics:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LOGISTICS_DB_NAME}
+      POSTGRES_USER: ${LOGISTICS_DB_USER}
+      POSTGRES_PASSWORD: ${LOGISTICS_DB_PASSWORD}
+    ports:
+      - "${LOGISTICS_DB_PORT}:5432"
+    volumes:
+      - logistics-postgres-data:/var/lib/postgresql/data
+    networks:
+      - platform-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  postgres-notifications:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NOTIFICATIONS_DB_NAME}
+      POSTGRES_USER: ${NOTIFICATIONS_DB_USER}
+      POSTGRES_PASSWORD: ${NOTIFICATIONS_DB_PASSWORD}
+    ports:
+      - "${NOTIFICATIONS_DB_PORT}:5432"
+    volumes:
+      - notifications-postgres-data:/var/lib/postgresql/data
+    networks:
+      - platform-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  commerce-api:
+    profiles: [app]
+    build:
+      context: ./services/commerce-laravel
+      dockerfile: Dockerfile
+      args:
+        PHP_IMAGE: ${COMMERCE_PHP_IMAGE:-php:8.4-cli-bookworm}
+        COMPOSER_IMAGE: ${COMMERCE_COMPOSER_IMAGE:-composer:2}
+    restart: unless-stopped
+    environment: &commerce-environment
+      APP_ENV: local
+      APP_KEY: ${COMMERCE_APP_KEY:-base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      APP_DEBUG: "true"
+      APP_URL: http://localhost:${COMMERCE_API_PORT:-8000}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres-commerce
+      DB_PORT: 5432
+      DB_DATABASE: ${COMMERCE_DB_NAME}
+      DB_USERNAME: ${COMMERCE_DB_USER}
+      DB_PASSWORD: ${COMMERCE_DB_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_VHOST: /
+      RABBITMQ_CONNECTION_TIMEOUT: 3
+      RABBITMQ_READ_WRITE_TIMEOUT: 3
+      RABBITMQ_HEARTBEAT: 30
+      RABBITMQ_PUBLISHER_CONFIRM_TIMEOUT: 5
+      RABBITMQ_ORDER_CREATED_QUEUE: commerce.order.created
+      RABBITMQ_ORDER_CREATED_DLQ: commerce.order.created.dlq
+    ports:
+      - "${COMMERCE_API_PORT:-8000}:8000"
+    networks:
+      - platform-internal
+    depends_on:
+      postgres-commerce:
+        condition: service_healthy
+    command: ["sh", "-c", "php artisan migrate --force && exec php artisan serve --host=0.0.0.0 --port=8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents(\"http://127.0.0.1:8000/up\") === false ? 1 : 0);'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  commerce-publisher:
+    profiles: [app]
+    build:
+      context: ./services/commerce-laravel
+      dockerfile: Dockerfile
+      args:
+        PHP_IMAGE: ${COMMERCE_PHP_IMAGE:-php:8.4-cli-bookworm}
+        COMPOSER_IMAGE: ${COMMERCE_COMPOSER_IMAGE:-composer:2}
+    restart: unless-stopped
+    environment: *commerce-environment
+    networks:
+      - platform-internal
+    depends_on:
+      commerce-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["php", "artisan", "events:publish", "--loop=1"]
+
+  commerce-consumer:
+    profiles: [app]
+    build:
+      context: ./services/commerce-laravel
+      dockerfile: Dockerfile
+      args:
+        PHP_IMAGE: ${COMMERCE_PHP_IMAGE:-php:8.4-cli-bookworm}
+        COMPOSER_IMAGE: ${COMMERCE_COMPOSER_IMAGE:-composer:2}
+    restart: unless-stopped
+    environment: *commerce-environment
+    networks:
+      - platform-internal
+    depends_on:
+      commerce-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: ["php", "artisan", "events:consume-order-created"]
+
+  logistics-migrator:
+    profiles: [app]
+    build:
+      context: ./services/logistics-go
+      dockerfile: Dockerfile
+      target: migrator
+      args:
+        GO_BUILD_IMAGE: ${LOGISTICS_GO_BUILD_IMAGE:-golang:1.26-alpine}
+        GO_RUNTIME_IMAGE: ${LOGISTICS_GO_RUNTIME_IMAGE:-alpine:3.22}
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://${LOGISTICS_DB_USER}:${LOGISTICS_DB_PASSWORD}@postgres-logistics:5432/${LOGISTICS_DB_NAME}?sslmode=disable
+      HTTP_ADDR: :8080
+      RABBITMQ_ENABLED: "false"
+    networks:
+      - platform-internal
+    depends_on:
+      postgres-logistics:
+        condition: service_healthy
+
+  logistics-api:
+    profiles: [app]
+    build:
+      context: ./services/logistics-go
+      dockerfile: Dockerfile
+      target: api
+      args:
+        GO_BUILD_IMAGE: ${LOGISTICS_GO_BUILD_IMAGE:-golang:1.26-alpine}
+        GO_RUNTIME_IMAGE: ${LOGISTICS_GO_RUNTIME_IMAGE:-alpine:3.22}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${LOGISTICS_DB_USER}:${LOGISTICS_DB_PASSWORD}@postgres-logistics:5432/${LOGISTICS_DB_NAME}?sslmode=disable
+      HTTP_ADDR: :8080
+      RABBITMQ_ENABLED: "false"
+    ports:
+      - "${LOGISTICS_API_PORT:-8080}:8080"
+    networks:
+      - platform-internal
+    depends_on:
+      logistics-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  logistics-worker:
+    profiles: [app]
+    build:
+      context: ./services/logistics-go
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        GO_BUILD_IMAGE: ${LOGISTICS_GO_BUILD_IMAGE:-golang:1.26-alpine}
+        GO_RUNTIME_IMAGE: ${LOGISTICS_GO_RUNTIME_IMAGE:-alpine:3.22}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${LOGISTICS_DB_USER}:${LOGISTICS_DB_PASSWORD}@postgres-logistics:5432/${LOGISTICS_DB_NAME}?sslmode=disable
+      HTTP_ADDR: :8080
+      RABBITMQ_ENABLED: "true"
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      RABBITMQ_SHIPMENT_REQUESTED_QUEUE: logistics.shipment.requested
+      RABBITMQ_SHIPMENT_REQUESTED_DLQ: logistics.shipment.requested.dlq
+      RABBITMQ_CONFIRM_TIMEOUT: 5s
+      OUTBOX_POLL_INTERVAL: 1s
+      OUTBOX_BATCH_SIZE: 100
+    networks:
+      - platform-internal
+    depends_on:
+      logistics-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notifications-api:
+    profiles: [app]
+    build:
+      context: ./services/notifications-nestjs
+      dockerfile: Dockerfile
+      target: api
+      args:
+        NODE_IMAGE: ${NOTIFICATIONS_NODE_IMAGE:-node:24-bookworm-slim}
+    restart: unless-stopped
+    environment: &notifications-api-environment
+      DB_HOST: postgres-notifications
+      DB_PORT: 5432
+      DB_DATABASE: ${NOTIFICATIONS_DB_NAME}
+      DB_USERNAME: ${NOTIFICATIONS_DB_USER}
+      DB_PASSWORD: ${NOTIFICATIONS_DB_PASSWORD}
+      HTTP_PORT: 3000
+      RABBITMQ_ENABLED: "false"
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      RABBITMQ_SHIPMENT_CREATED_QUEUE: notifications.logistics.shipment.created
+      RABBITMQ_SHIPMENT_CREATED_DLQ: notifications.logistics.shipment.created.dlq
+      RABBITMQ_NOTIFICATION_REQUESTED_QUEUE: notifications.requested
+      RABBITMQ_NOTIFICATION_REQUESTED_DLQ: notifications.requested.dlq
+      OUTBOX_POLL_INTERVAL: 1000
+      OUTBOX_BATCH_SIZE: 100
+    ports:
+      - "${NOTIFICATIONS_API_PORT:-3000}:3000"
+    networks:
+      - platform-internal
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/healthz', response => process.exit(response.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  notifications-worker:
+    profiles: [app]
+    build:
+      context: ./services/notifications-nestjs
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        NODE_IMAGE: ${NOTIFICATIONS_NODE_IMAGE:-node:24-bookworm-slim}
+    restart: unless-stopped
+    environment:
+      <<: *notifications-api-environment
+      RABBITMQ_ENABLED: "true"
+    networks:
+      - platform-internal
+    depends_on:
+      notifications-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+networks:
+  platform-internal:
+    name: ${COMPOSE_PROJECT_NAME}-internal
+
+volumes:
+  rabbitmq-data:
+    name: ${COMPOSE_PROJECT_NAME}-rabbitmq-data
+  commerce-postgres-data:
+    name: ${COMPOSE_PROJECT_NAME}-commerce-postgres-data
+  logistics-postgres-data:
+    name: ${COMPOSE_PROJECT_NAME}-logistics-postgres-data
+  notifications-postgres-data:
+    name: ${COMPOSE_PROJECT_NAME}-notifications-postgres-data
