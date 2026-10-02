@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate default Compose configuration
         run: docker compose --env-file .env.example config --quiet
@@ -32,7 +32,7 @@ jobs:
         working-directory: services/commerce-laravel
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up PHP 8.4
         uses: shivammathur/setup-php@v2
@@ -76,7 +76,7 @@ jobs:
         working-directory: services/logistics-go
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -101,7 +101,7 @@ jobs:
         working-directory: services/notifications-nestjs
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v5
@@ -135,7 +135,7 @@ jobs:
       - nestjs
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Start the full ephemeral Compose stack
         run: docker compose --env-file .env.example --profile app up -d --build
