@@ -1,0 +1,66 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+
+# Laravel / PHP
+/vendor/
+storage/*.key
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/testing/*
+storage/framework/views/*
+storage/logs/*
+bootstrap/cache/*
+
+# Node.js / NestJS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+coverage/
+.nestjs/
+.npm/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+coverage.out
+
+# Docker local state
+docker-compose.override.yml
+.docker/
+docker-volumes/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# General build and temporary files
+tmp/
+temp/
+*.log
