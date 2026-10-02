@@ -58,6 +58,12 @@ Una PR solo puede integrarse cuando cumple todo lo siguiente:
 - usa squash cuando la unidad debe llegar como un commit coherente; usa rebase para actualizar la rama sin crear merges accidentales. La estrategia concreta debe respetar la protección configurada en GitHub;
 - no contiene commits de IA ni trailers `Co-Authored-By`.
 
+Las PRs generadas automáticamente por Dependabot son la única excepción
+operativa al requisito de issue humana: se agrupan, apuntan a `develop`,
+mantienen CI obligatorio y necesitan revisión de una persona antes de
+integrarse. No se aceptan automáticamente ni se dirigen directamente a
+`main`.
+
 No se permite fusionar una PR directamente a `main` para trabajo normal. `main` recibe releases y hotfixes.
 
 ## Conventional Commits
