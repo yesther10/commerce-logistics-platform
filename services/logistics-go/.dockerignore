@@ -1,0 +1,13 @@
+.env
+.env.*
+.git
+.gitignore
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+*.log
