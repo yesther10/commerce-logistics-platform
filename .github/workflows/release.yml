@@ -1,0 +1,93 @@
+name: Publish release images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer image tag without the leading v, for example 1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: commerce
+            context: ./services/commerce-laravel
+            dockerfile: ./services/commerce-laravel/Dockerfile
+            target: commerce
+          - image: logistics-api
+            context: ./services/logistics-go
+            dockerfile: ./services/logistics-go/Dockerfile
+            target: api
+          - image: logistics-worker
+            context: ./services/logistics-go
+            dockerfile: ./services/logistics-go/Dockerfile
+            target: worker
+          - image: notifications-api
+            context: ./services/notifications-nestjs
+            dockerfile: ./services/notifications-nestjs/Dockerfile
+            target: api
+          - image: notifications-worker
+            context: ./services/notifications-nestjs
+            dockerfile: ./services/notifications-nestjs/Dockerfile
+            target: worker
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate manual version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "workflow_dispatch version must match X.Y.Z" >&2
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # This workflow publishes versioned artifacts to GHCR. It does not deploy to production.

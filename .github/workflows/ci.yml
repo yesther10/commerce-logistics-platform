@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  compose-syntax:
+    name: Compose syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate default Compose configuration
+        run: docker compose --env-file .env.example config --quiet
+
+      - name: Validate app profile Compose configuration
+        run: docker compose --env-file .env.example --profile app config --quiet
+
+  laravel:
+    name: Laravel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/commerce-laravel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring,pdo_pgsql,pdo_sqlite,sockets,zip
+          tools: composer:v2
+          coverage: none
+
+      - name: Prepare CI environment
+        run: cp .env.example .env
+
+      - name: Validate Composer manifest
+        run: composer validate --strict
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php-8.4-composer-${{ hashFiles('services/commerce-laravel/composer.lock') }}
+          restore-keys: ${{ runner.os }}-php-8.4-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Check PHP formatting
+        run: vendor/bin/pint --test
+
+      - name: Run Laravel tests
+        run: php artisan test
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/logistics-go
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: services/logistics-go/go.mod
+          cache-dependency-path: services/logistics-go/go.sum
+
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l cmd internal)"
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+  nestjs:
+    name: NestJS
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/notifications-nestjs
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/notifications-nestjs/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build application
+        run: npm run build
+
+  integration:
+    name: Full Compose integration
+    runs-on: ubuntu-latest
+    needs:
+      - compose-syntax
+      - laravel
+      - go
+      - nestjs
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Start the full ephemeral Compose stack
+        run: docker compose --env-file .env.example --profile app up -d --build
+
+      - name: Wait for service health endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_for_health() {
+            local url="$1"
+            for attempt in {1..60}; do
+              if curl --fail --silent --show-error "$url" >/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for $url" >&2
+            return 1
+          }
+
+          wait_for_health http://127.0.0.1:8000/up
+          wait_for_health http://127.0.0.1:8080/healthz
+          wait_for_health http://127.0.0.1:3000/healthz
+
+      - name: Create product and order through HTTP APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          product_response="$(curl --fail --silent --show-error \
+            -X POST http://127.0.0.1:8000/api/v1/products \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"CI integration product","price":"12.50"}')"
+          product_id="$(jq --exit-status --raw-output '.data.id' <<<"$product_response")"
+
+          order_response="$(curl --fail --silent --show-error \
+            -X POST http://127.0.0.1:8000/api/v1/orders \
+            -H 'Content-Type: application/json' \
+            -d "{\"items\":[{\"product_id\":\"$product_id\",\"quantity\":1}]}")"
+          order_id="$(jq --exit-status --raw-output '.data.id' <<<"$order_response")"
+
+          printf 'ORDER_ID=%s\n' "$order_id" >> "$GITHUB_ENV"
+
+      - name: Poll notification PostgreSQL state until delivered
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .env.example
+          if [[ ! "$ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo "The commerce API returned an invalid order UUID" >&2
+            exit 1
+          fi
+
+          for attempt in {1..60}; do
+            status="$(docker compose --env-file .env.example exec -T postgres-notifications \
+              psql -U "$NOTIFICATIONS_DB_USER" -d "$NOTIFICATIONS_DB_NAME" -Atqc \
+              "SELECT status FROM notification_requests WHERE order_id = '$ORDER_ID' ORDER BY created_at DESC LIMIT 1;" \
+              | tr -d '\r')"
+            if [[ "$status" == delivered ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker compose --env-file .env.example --profile app logs --no-color \
+            commerce-publisher commerce-consumer logistics-worker notifications-worker
+          echo "Notification request for $ORDER_ID did not reach delivered" >&2
+          exit 1
+
+      - name: Tear down ephemeral integration environment
+        if: always()
+        run: docker compose --env-file .env.example --profile app down -v
