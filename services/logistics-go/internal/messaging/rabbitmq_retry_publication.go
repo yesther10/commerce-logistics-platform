@@ -11,6 +11,14 @@ import (
 	"github.com/yguerra/commerce-logistics-platform/services/logistics-go/internal/events"
 )
 
+type RetryMessage struct {
+	Body       []byte
+	Event      events.Envelope
+	Headers    amqp.Table
+	RetryCount int
+	Delay      time.Duration
+}
+
 type RetryPublisher interface {
 	PublishRetry(context.Context, RetryMessage) error
 	PublishDeadLetter(context.Context, RetryMessage) error
