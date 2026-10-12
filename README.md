@@ -32,7 +32,7 @@ docker compose up -d
 docker compose --profile app up -d --build
 ```
 
-The containerized stack is a local development harness, not a production deployment: it uses development credentials, direct service ports, simulated payment/notification behavior, and no TLS, authentication, automatic RabbitMQ reconnection, delayed retries, or production orchestration.
+The containerized stack is a local development harness, not a production deployment: it uses development credentials, direct service ports, simulated payment/notification behavior, and no TLS, authentication, automatic RabbitMQ reconnection, or production orchestration. The logistics-go `ShipmentRequested` worker does implement bounded delayed retries; other consumers do not yet share that policy.
 
 ## Repository layout
 

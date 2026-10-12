@@ -137,7 +137,7 @@ This stack intentionally does not provide:
 - production credentials, secret management, TLS, backups, or external provider integrations;
 - an API Gateway, authentication, rate limiting, or centralized observability;
 - production migration orchestration, rolling deployment, autoscaling, or resource policies;
-- delayed automatic RabbitMQ retries or full connection/channel recovery;
+- delayed automatic RabbitMQ retries for consumers other than the logistics-go `ShipmentRequested` worker, or full connection/channel recovery;
 - real payment, carrier, email, SMS, or push delivery.
 
 Consumers use durable topologies, manual acknowledgements, publisher confirms, local deduplication, and DLQs as documented in [`../../docs/events.md`](../../docs/events.md). Failed messages still require controlled DLQ inspection/replay. The full containerized smoke flow should be treated as local integration verification, not a production readiness signal.

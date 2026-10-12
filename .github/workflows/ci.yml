@@ -140,6 +140,38 @@ jobs:
       - name: Start the full ephemeral Compose stack
         run: docker compose --env-file .env.example --profile app up -d --build
 
+      - name: Set up Go for RabbitMQ integration verification
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: services/logistics-go/go.mod
+          cache-dependency-path: services/logistics-go/go.sum
+
+      - name: Verify logistics retry topology, TTL progression, and final DLQ
+        working-directory: services/logistics-go
+        env:
+          RABBITMQ_INTEGRATION: '1'
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if docker compose --project-directory ../.. --env-file ../../.env.example exec -T rabbitmq rabbitmq-diagnostics -q ping; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              echo 'RabbitMQ did not become ready for the retry verification' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          vhost="issue30-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker compose --project-directory ../.. --env-file ../../.env.example exec -T rabbitmq rabbitmqctl add_vhost "$vhost"
+          docker compose --project-directory ../.. --env-file ../../.env.example exec -T rabbitmq rabbitmqctl set_permissions -p "$vhost" dev_rabbitmq '.*' '.*' '.*'
+          cleanup() {
+            docker compose --project-directory ../.. --env-file ../../.env.example exec -T rabbitmq rabbitmqctl delete_vhost "$vhost"
+          }
+          trap cleanup EXIT
+          RABBITMQ_URL="amqp://dev_rabbitmq:dev_rabbitmq_password@127.0.0.1:5673/$vhost" \
+            go test ./internal/messaging -run '^TestRabbitMQRetryTopologyIntegration$' -count=1 -v
+
       - name: Wait for service health endpoints
         shell: bash
         run: |
