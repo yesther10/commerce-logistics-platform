@@ -11,13 +11,18 @@ import (
 )
 
 const (
-	Exchange            = "platform.events"
-	DeadLetterExchange  = "platform.events.dlx"
-	ShipmentRequested   = "ShipmentRequested"
-	ShipmentCreated     = "ShipmentCreated"
-	ShipmentRequestedRK = "commerce.shipment.requested"
-	ShipmentCreatedRK   = "logistics.shipment.created"
+	Exchange                       = "platform.events"
+	DeadLetterExchange             = "platform.events.dlx"
+	ShipmentRequested              = "ShipmentRequested"
+	ShipmentCreated                = "ShipmentCreated"
+	ShipmentRequestedRK            = "commerce.shipment.requested"
+	ShipmentCreatedRK              = "logistics.shipment.created"
+	ShipmentRequestedRetryRKPrefix = "logistics.shipment.requested.retry"
 )
+
+func ShipmentRequestedRetryRK(retryCount int) string {
+	return fmt.Sprintf("%s.%d", ShipmentRequestedRetryRKPrefix, retryCount)
+}
 
 type Envelope struct {
 	EventID       string
