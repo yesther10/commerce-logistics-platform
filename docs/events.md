@@ -146,13 +146,13 @@ The initial design does not prescribe a shared idempotency library or cross-serv
 
 - A consumer acknowledges a message only after its local database work succeeds.
 - A transient failure is retried up to three delivery attempts after the initial attempt, for a maximum of four attempts total.
-- Retry delays are implementation-configurable, but must be increasing and must not busy-loop. The retry count must be carried in broker headers or an equivalent transport-level mechanism.
+- Retry delays are implementation-configurable, but must be increasing whole milliseconds and must not busy-loop. The retry count must be carried in broker headers or an equivalent transport-level mechanism. The current logistics and notifications workers use three stages: 1s, 5s, and 15s.
 - A permanent validation, unsupported-version, or business-rule failure is not retried. It is routed directly to the consumer's dead-letter queue.
 - After the final transient retry fails, the message is routed to the consumer-specific dead-letter queue through the dead-letter exchange `platform.events.dlx`.
-- Dead-lettered messages retain the original event envelope and include enough broker metadata to diagnose the failure, including the last error and retry count.
+- Dead-lettered messages retain the original event envelope, identity properties, and bounded service-scoped metadata needed to diagnose the failure, including the classification and retry count. Consumers must not copy arbitrary incoming headers, credentials, or payload data into retry metadata or logs.
 - Dead-letter queues are for inspection and controlled replay. Replay must preserve the original `event_id` and correlation data and must occur only after the cause is understood.
 
-The current first-stage consumers declare durable dead-letter topologies and reject processing failures to their consumer-specific dead-letter queues, but do not yet provide delayed automatic retries. This is an implementation limitation of this work unit; replay from a dead-letter queue must be controlled until the bounded retry policy is added.
+The logistics and notifications consumers declare additive durable TTL retry queues. A transient failure is published to the next service-owned retry queue and the publication is confirmed before the original delivery is acknowledged. The retry queue dead-letters back to the original event routing key; after the third delayed retry, or for a permanent failure, the consumer publishes to its final DLQ. A malformed notification message is sent through broker `reject(message, false)` because its envelope cannot be safely reconstructed. A publication or ACK failure must leave the original delivery unacknowledged or requeued so redelivery remains possible; a confirmed retry followed by an ACK failure can therefore produce a duplicate, which inbox idempotency must absorb.
 
 The contract does not define automatic replay, message loss, or silent discard. A dead-lettered message remains available for operator or development-time inspection.
 

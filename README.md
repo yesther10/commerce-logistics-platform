@@ -32,7 +32,7 @@ docker compose up -d
 docker compose --profile app up -d --build
 ```
 
-The containerized stack is a local development harness, not a production deployment: it uses development credentials, direct service ports, simulated payment/notification behavior, and no TLS, authentication, automatic RabbitMQ reconnection, delayed retries, or production orchestration.
+The containerized stack is a local development harness, not a production deployment: it uses development credentials, direct service ports, simulated payment/notification behavior, bounded delayed RabbitMQ retries, and no TLS, authentication, automatic RabbitMQ reconnection, or production orchestration. Retry publication is at-least-once: a confirmed retry followed by an ACK failure can produce a duplicate, so consumers rely on inbox idempotency.
 
 ## Repository layout
 
@@ -50,7 +50,7 @@ docs/
 
 ## Status
 
-Initial service implementations plus local Docker infrastructure and an optional containerized application profile. The current integration completes the `ShipmentRequested` -> `ShipmentCreated` -> `NotificationRequested` -> simulated delivery path with local outboxes, inbox deduplication, publisher confirms, and durable DLQs.
+Initial service implementations plus local Docker infrastructure and an optional containerized application profile. The current integration completes the `ShipmentRequested` -> `ShipmentCreated` -> `NotificationRequested` -> simulated delivery path with local outboxes, inbox deduplication, publisher confirms, durable DLQs, and bounded 1s/5s/15s retries in the logistics and notifications workers. The notifications broker-gated retry test is opt-in and documented in the service README.
 
 ## Educational documentation
 

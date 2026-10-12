@@ -17,13 +17,17 @@ import {
   parseEventEnvelope,
   routingKeyFor,
   serializeEventEnvelope,
-  SHIPMENT_CREATED_EVENT,
+  EVENTS_EXCHANGE,
   NOTIFICATION_REQUESTED_EVENT,
+  SHIPMENT_CREATED_EVENT,
 } from './event-envelope';
 import {
   declareNotificationsTopology,
+  notificationRetryQueuesFromConfig,
   type QueueTopology,
 } from './rabbitmq-topology';
+import { handleNotificationMessage } from './rabbitmq-worker-retry';
+import { PermanentNotificationError } from './rabbitmq-worker-classification';
 import { NotificationEventProcessor } from '../notifications/application/notification-event-processor';
 import {
   NOTIFICATION_EVENT_UNIT_OF_WORK,
@@ -68,14 +72,26 @@ export class RabbitMqWorker implements OnApplicationShutdown {
     await consumerChannel.consume(
       topology.shipmentCreatedQueue,
       (message) => {
-        if (message) void this.handleShipmentCreated(message);
+        if (message) {
+          void this.handleShipmentCreated(message).catch((error) =>
+            this.logger.error(
+              `notifications ShipmentCreated callback failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        }
       },
       { noAck: false },
     );
     await consumerChannel.consume(
       topology.notificationRequestedQueue,
       (message) => {
-        if (message) void this.handleNotificationRequested(message);
+        if (message) {
+          void this.handleNotificationRequested(message).catch((error) =>
+            this.logger.error(
+              `notifications NotificationRequested callback failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        }
       },
       { noAck: false },
     );
@@ -102,7 +118,9 @@ export class RabbitMqWorker implements OnApplicationShutdown {
   private async handleShipmentCreated(message: ConsumeMessage): Promise<void> {
     await this.handleMessage(message, (event) => {
       if (event.event_type !== SHIPMENT_CREATED_EVENT) {
-        throw new Error(`unexpected event type ${event.event_type}`);
+        throw new PermanentNotificationError(
+          `unexpected event type ${event.event_type}`,
+        );
       }
       return this.processor.processShipmentCreated(event);
     });
@@ -113,7 +131,9 @@ export class RabbitMqWorker implements OnApplicationShutdown {
   ): Promise<void> {
     await this.handleMessage(message, (event) => {
       if (event.event_type !== NOTIFICATION_REQUESTED_EVENT) {
-        throw new Error(`unexpected event type ${event.event_type}`);
+        throw new PermanentNotificationError(
+          `unexpected event type ${event.event_type}`,
+        );
       }
       return this.processor.processNotificationRequested(event);
     });
@@ -123,16 +143,11 @@ export class RabbitMqWorker implements OnApplicationShutdown {
     message: ConsumeMessage,
     handler: (event: ReturnType<typeof parseEventEnvelope>) => Promise<unknown>,
   ): Promise<void> {
-    try {
-      const event = parseEventEnvelope(
-        JSON.parse(message.content.toString('utf8')),
-      );
-      await handler(event);
-      this.consumerChannel?.ack(message);
-    } catch (error) {
-      this.logger.error(error instanceof Error ? error.message : String(error));
-      this.consumerChannel?.reject(message, false);
-    }
+    await handleNotificationMessage(message, handler, {
+      consumerChannel: this.consumerChannel,
+      publisherChannel: this.publisherChannel,
+      retryQueues: this.topology().retryQueues ?? [],
+    });
   }
 
   private async publishPendingOutbox(): Promise<void> {
@@ -160,7 +175,7 @@ export class RabbitMqWorker implements OnApplicationShutdown {
       return Promise.reject(new Error('RabbitMQ publisher is not started'));
     return new Promise((resolve, reject) => {
       channel.publish(
-        'platform.events',
+        EVENTS_EXCHANGE,
         routingKeyFor(event.event_type),
         serializeEventEnvelope(event),
         {
@@ -199,6 +214,9 @@ export class RabbitMqWorker implements OnApplicationShutdown {
       notificationRequestedDeadLetterQueue: this.config.get(
         'RABBITMQ_NOTIFICATION_REQUESTED_DLQ',
         'notifications.requested.dlq',
+      ),
+      retryQueues: notificationRetryQueuesFromConfig((key, fallback) =>
+        this.config.get(key, fallback),
       ),
     };
   }
