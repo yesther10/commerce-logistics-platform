@@ -2,10 +2,16 @@ import { randomUUID } from 'node:crypto';
 
 export const EVENTS_EXCHANGE = 'platform.events';
 export const EVENTS_DEAD_LETTER_EXCHANGE = 'platform.events.dlx';
+export const NOTIFICATIONS_RETRY_EXCHANGE = 'platform.notifications.retry';
 export const SHIPMENT_CREATED_EVENT = 'ShipmentCreated';
 export const NOTIFICATION_REQUESTED_EVENT = 'NotificationRequested';
 export const SHIPMENT_CREATED_ROUTING_KEY = 'logistics.shipment.created';
 export const NOTIFICATION_REQUESTED_ROUTING_KEY = 'notifications.requested';
+export const NOTIFICATIONS_RETRY_ROUTING_KEY_PREFIX = 'notifications.retry';
+
+export function notificationsRetryRoutingKey(retryCount: number): string {
+  return `${NOTIFICATIONS_RETRY_ROUTING_KEY_PREFIX}.${retryCount}`;
+}
 
 export interface EventEnvelope<
   TPayload extends Record<string, unknown> = Record<string, unknown>,
