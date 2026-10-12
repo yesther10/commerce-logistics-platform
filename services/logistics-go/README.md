@@ -52,7 +52,7 @@ curl http://127.0.0.1:8080/shipments/<shipment_id>
 
 The worker consumes `ShipmentRequested` from [`../../docs/events.md`](../../docs/events.md), creates the shipment and `ShipmentCreated` outbox record in one PostgreSQL transaction, and acknowledges only after that transaction commits. The consumer records `event_id` in `processed_events`, so duplicate deliveries are acknowledged without repeating business work.
 
-The outbox publisher uses RabbitMQ publisher confirms and marks an event as published only after confirmation. A process failure between broker confirmation and the database update can publish the same `event_id` again; downstream consumers must therefore remain idempotent. Delayed retries are not implemented yet. Processing failures are rejected to the durable consumer DLQ through `platform.events.dlx` for controlled inspection or replay.
+The outbox publisher uses RabbitMQ publisher confirms and marks an event as published only after confirmation. A process failure between broker confirmation and the database update can publish the same `event_id` again; downstream consumers must therefore remain idempotent. Transient `ShipmentRequested` processing failures are published with the original body and identity to one of three durable retry queues (`1s`, `5s`, and `15s` by default), then acknowledged only after the retry publication is confirmed. Parsed permanent envelope or payload validation failures and exhausted retries are explicitly published to the final DLQ with bounded safe error metadata, then acknowledged. Malformed messages use the existing reject-to-DLQ path because they cannot be safely reconstructed. If retry or DLQ publication fails, or if the following acknowledgement fails, the worker stops without a successful acknowledgement so broker redelivery remains possible after recovery. A publication followed by acknowledgement failure may duplicate a retry or DLQ message; this is RabbitMQ at-least-once behavior, not exactly-once delivery.
 
 ### Run the HTTP server
 
@@ -70,9 +70,11 @@ Start PostgreSQL and RabbitMQ from the repository root, copy `.env.example`, the
 go run ./cmd/worker
 ```
 
-The worker applies migrations, declares the durable topic exchange `platform.events`, the durable DLX `platform.events.dlx`, its own durable queue and DLQ, binds `commerce.shipment.requested`, uses manual acknowledgements, and sets prefetch to `1`. It also polls and publishes pending outbox events.
+The worker applies migrations, declares the durable topic exchange `platform.events`, the durable DLX `platform.events.dlx`, its own durable queue and DLQ, and three new retry queues that dead-letter back to the main exchange after per-message expiration. It binds `commerce.shipment.requested`, uses manual acknowledgements, and sets prefetch to `1`. It also polls and publishes pending outbox events.
 
-Important variables are `DATABASE_URL`, `RABBITMQ_ENABLED`, `RABBITMQ_URL`, `RABBITMQ_SHIPMENT_REQUESTED_QUEUE`, `RABBITMQ_SHIPMENT_REQUESTED_DLQ`, `RABBITMQ_CONFIRM_TIMEOUT`, `OUTBOX_POLL_INTERVAL`, and `OUTBOX_BATCH_SIZE`.
+Important variables are `DATABASE_URL`, `RABBITMQ_ENABLED`, `RABBITMQ_URL`, `RABBITMQ_SHIPMENT_REQUESTED_QUEUE`, `RABBITMQ_SHIPMENT_REQUESTED_DLQ`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_QUEUE_1`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_QUEUE_2`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_QUEUE_3`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_DELAY_1`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_DELAY_2`, `RABBITMQ_SHIPMENT_REQUESTED_RETRY_DELAY_3`, `RABBITMQ_CONFIRM_TIMEOUT`, `OUTBOX_POLL_INTERVAL`, and `OUTBOX_BATCH_SIZE`. Retry delays must be positive whole milliseconds and strictly increasing at the broker's millisecond granularity.
+
+Worker attempt logs are JSON emitted with Go's standard `log/slog`. Each attempt includes service, component, queue, event identifiers, retry count, outcome, and a safe error class when relevant; event payloads and credentials are never logged.
 
 ## Tests and verification
 
@@ -86,6 +88,8 @@ git diff --check
 ```
 
 The unit and HTTP tests use an in-memory fake repository and `httptest`; they do not require PostgreSQL or RabbitMQ. PostgreSQL is required for the service runtime, worker, and migration command. RabbitMQ is required only when the worker is enabled.
+
+The Compose CI integration job runs `RABBITMQ_INTEGRATION=1 go test ./internal/messaging -run '^TestRabbitMQRetryTopologyIntegration$'` against a temporary RabbitMQ vhost. This check declares isolated queues, publishes three short-expiration retry messages, verifies that each expires back to the main queue, and verifies confirmed final-DLQ publication with the original identity and safe metadata. It proves broker topology, publication, routing, and TTL behavior without changing the full business flow. It does not inject processor failures into the running worker, so live failure classification and worker-driven exhaustion remain covered by unit tests rather than this broker check.
 
 ## Containerized processes
 

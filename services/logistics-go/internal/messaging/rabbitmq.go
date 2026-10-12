@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/yguerra/commerce-logistics-platform/services/logistics-go/internal/application"
 	"github.com/yguerra/commerce-logistics-platform/services/logistics-go/internal/events"
 )
 
@@ -106,42 +104,5 @@ func (p *Publisher) publish(ctx context.Context, routingKey string, message amqp
 		return errors.New("RabbitMQ publisher confirmation timed out")
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-func ConsumeShipmentRequested(ctx context.Context, channel *amqp.Channel, config TopologyConfig, processor interface {
-	Handle(context.Context, events.Envelope) (application.ShipmentRequestedResult, error)
-}) error {
-	if err := DeclareLogisticsTopology(channel, config); err != nil {
-		return fmt.Errorf("declare logistics RabbitMQ topology: %w", err)
-	}
-	if err := channel.Qos(1, 0, false); err != nil {
-		return fmt.Errorf("set RabbitMQ prefetch: %w", err)
-	}
-	deliveries, err := channel.Consume(config.Queue, "", false, false, false, false, nil)
-	if err != nil {
-		return fmt.Errorf("consume ShipmentRequested: %w", err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case delivery, ok := <-deliveries:
-			if !ok {
-				return errors.New("RabbitMQ consumer channel closed")
-			}
-			event, err := events.Parse(delivery.Body)
-			if err == nil {
-				_, err = processor.Handle(ctx, event)
-			}
-			if err != nil {
-				_ = delivery.Reject(false)
-				continue
-			}
-			if err := delivery.Ack(false); err != nil {
-				return fmt.Errorf("acknowledge ShipmentRequested: %w", err)
-			}
-		}
 	}
 }
