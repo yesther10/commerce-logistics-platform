@@ -9,6 +9,7 @@ import type {
 } from './notification-request.store';
 import {
   NotificationWorkflow,
+  PermanentNotificationError,
   type NotificationEventTransaction,
   type NotificationEventUnitOfWork,
 } from './notification-workflow';
@@ -59,6 +60,19 @@ describe('NotificationWorkflow', () => {
     expect(delivered.request?.status).toBe('delivered');
     expect(duplicate.duplicate).toBe(true);
     expect(store.requests[0].status).toBe('delivered');
+  });
+
+  it('classifies invalid event contracts as permanent notification failures', async () => {
+    const workflow = new NotificationWorkflow(
+      () => '55555555-5555-5555-5555-555555555555',
+      () => new Date('2026-01-01T12:00:00.000Z'),
+    );
+    const event = shipmentCreatedEvent();
+    event.event_version = 2;
+
+    expect(() =>
+      workflow.processShipmentCreated(new FakeNotificationUnitOfWork(), event),
+    ).toThrow(PermanentNotificationError);
   });
 });
 

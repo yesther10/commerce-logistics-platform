@@ -1,4 +1,5 @@
 import type { EventEnvelope } from '../../messaging/event-envelope';
+import { PermanentNotificationError } from '../../messaging/rabbitmq-worker-classification';
 import {
   newEventEnvelope,
   NOTIFICATION_REQUESTED_EVENT,
@@ -13,6 +14,8 @@ import type {
 export const NOTIFICATION_EVENT_UNIT_OF_WORK = Symbol(
   'NOTIFICATION_EVENT_UNIT_OF_WORK',
 );
+
+export { PermanentNotificationError } from '../../messaging/rabbitmq-worker-classification';
 
 export interface NotificationEventTransaction {
   markEventProcessed(event: EventEnvelope, processedAt: Date): Promise<boolean>;
@@ -50,7 +53,7 @@ export class NotificationWorkflow {
     unitOfWork: NotificationEventUnitOfWork,
     event: EventEnvelope,
   ): Promise<NotificationWorkflowResult> {
-    requireEventType(event, SHIPMENT_CREATED_EVENT);
+    requirePermanentEventType(event, SHIPMENT_CREATED_EVENT);
     const payload = shipmentCreatedPayload(event);
     const input = {
       orderId: payload.order_id,
@@ -103,7 +106,7 @@ export class NotificationWorkflow {
     unitOfWork: NotificationEventUnitOfWork,
     event: EventEnvelope,
   ): Promise<NotificationWorkflowResult> {
-    requireEventType(event, NOTIFICATION_REQUESTED_EVENT);
+    requirePermanentEventType(event, NOTIFICATION_REQUESTED_EVENT);
     const input = payloadToInput(event);
 
     return unitOfWork.withTransaction(async (transaction) => {
@@ -119,13 +122,13 @@ export class NotificationWorkflow {
       }
       const request = await transaction.findByIdentity(input);
       if (!request) {
-        throw new Error(
+        throw new PermanentNotificationError(
           'NotificationRequested has no local notification request',
         );
       }
       const delivered = await transaction.markDelivered(input);
       if (!delivered) {
-        throw new Error(
+        throw new PermanentNotificationError(
           'notification request could not transition to delivered',
         );
       }
@@ -151,7 +154,7 @@ function shipmentCreatedPayload(event: EventEnvelope): {
     typeof payload.shipment_id !== 'string' ||
     typeof payload.shipment_status !== 'string'
   ) {
-    throw new Error('ShipmentCreated payload is invalid');
+    throw new PermanentNotificationError('ShipmentCreated payload is invalid');
   }
   return {
     order_id: payload.order_id,
@@ -167,7 +170,9 @@ function payloadToInput(event: EventEnvelope): CreateNotificationRequest {
     typeof payload.shipment_id !== 'string' ||
     payload.notification_type !== 'shipment_created'
   ) {
-    throw new Error('NotificationRequested payload is invalid');
+    throw new PermanentNotificationError(
+      'NotificationRequested payload is invalid',
+    );
   }
   return {
     orderId: payload.order_id,
@@ -184,4 +189,17 @@ function inputToPayload(
     shipment_id: input.shipmentId,
     notification_type: input.notificationType,
   };
+}
+
+function requirePermanentEventType(
+  event: EventEnvelope,
+  eventType: string,
+): void {
+  try {
+    requireEventType(event, eventType);
+  } catch (error) {
+    throw new PermanentNotificationError(
+      error instanceof Error ? error.message : 'event validation failed',
+    );
+  }
 }
