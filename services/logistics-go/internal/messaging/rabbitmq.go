@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -54,14 +55,14 @@ type Publisher struct {
 	channel       *amqp.Channel
 	confirmations <-chan amqp.Confirmation
 	timeout       time.Duration
+	mu            sync.Mutex
 }
 
 func NewPublisher(channel *amqp.Channel, timeout time.Duration) (*Publisher, error) {
 	if err := channel.Confirm(false); err != nil {
 		return nil, err
 	}
-	confirmations := channel.NotifyPublish(make(chan amqp.Confirmation, 1))
-	return &Publisher{channel: channel, confirmations: confirmations, timeout: timeout}, nil
+	return &Publisher{channel: channel, confirmations: channel.NotifyPublish(make(chan amqp.Confirmation, 1)), timeout: timeout}, nil
 }
 
 func (p *Publisher) Publish(ctx context.Context, event events.Envelope) error {
@@ -73,14 +74,20 @@ func (p *Publisher) Publish(ctx context.Context, event events.Envelope) error {
 	if err != nil {
 		return err
 	}
-	if err := p.channel.PublishWithContext(ctx, events.Exchange, routingKey, false, false, amqp.Publishing{
+	return p.publish(ctx, routingKey, amqp.Publishing{
 		ContentType:   "application/json",
 		DeliveryMode:  amqp.Persistent,
 		MessageId:     event.EventID,
 		Type:          event.EventType,
 		CorrelationId: event.CorrelationID,
 		Body:          body,
-	}); err != nil {
+	}, events.Exchange)
+}
+
+func (p *Publisher) publish(ctx context.Context, routingKey string, message amqp.Publishing, exchange string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.channel.PublishWithContext(ctx, exchange, routingKey, false, false, message); err != nil {
 		return err
 	}
 
