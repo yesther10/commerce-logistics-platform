@@ -218,7 +218,7 @@ El alcance inicial es un e-commerce con logística integrada, reducido al ciclo 
 | Proveedor real de email, SMS o push | La entrega de notificaciones es simulada. |
 | Base compartida o librería de dominio compartida | Rompería el ejercicio de ownership independiente. |
 | HTTP entre servicios para este ciclo | RabbitMQ es la frontera de integración elegida. |
-| Retries delayed y reconexión automática | Son trabajo futuro; la limitación actual es explícita y se documenta en [Retries y DLQ](#10-retries-y-dlq-la-limitación-actual). |
+| Reconexión automática | Logistics y notifications ya usan retries acotados de 1 s, 5 s y 15 s; la reconexión automática completa sigue fuera de alcance. |
 | Contenedores de aplicación | El perfil `app` construye y separa APIs, publishers, consumers, workers y el migrador Go; el modo predeterminado conserva solo las dependencias. |
 | Autenticación y credenciales de producción | No forman parte de la primera etapa educativa. |
 
@@ -665,57 +665,52 @@ Cada mecanismo resuelve una ventana de fallo distinta:
 
 | Escenario | Comportamiento actual |
 | --- | --- |
-| Falla la base antes del commit local | No queda negocio ni outbox confirmado. El consumidor no debería ACKear; la implementación actual rechaza el fallo hacia la DLQ porque todavía no hay delayed retry. |
+| Falla la base antes del commit local | No queda negocio ni outbox confirmado. El consumidor publica un retry transitorio y solo confirma el ACK después de la confirmación de publicación; si publicar o ACKear falla, la redelivery sigue siendo posible. |
 | El proceso cae antes de publicar el outbox | La fila queda pendiente. El publisher puede volver a intentarlo: Artisan al ejecutar otra vez, o el polling del worker Go/NestJS. |
 | RabbitMQ no confirma la publicación | El outbox permanece pendiente y el publisher informa el error. No se marca como publicado. |
 | RabbitMQ confirma y el proceso cae antes de marcar la fila | La misma fila se publica otra vez. Conserva el `event_id`; el consumidor reconoce el duplicado y no repite el cambio. |
 | El consumidor hace commit y cae antes de ACK | RabbitMQ redelivera el mensaje. `processed_events` indica que ya se procesó; el consumidor hace ACK sin repetir negocio. |
-| Payload inválido, versión no soportada o regla permanente inválida | Se rechaza sin reencolar y se envía a la DLQ del consumidor. |
+| Payload inválido, versión no soportada o regla permanente inválida | Un payload malformed se rechaza con `reject(message, false)` porque no se puede reconstruir su envelope; una regla permanente se publica directamente en la DLQ del consumidor. |
 | RabbitMQ se reinicia mientras el worker está conectado | La implementación actual no ofrece reconexión automática; se debe diagnosticar y reiniciar el proceso cuando corresponda. |
 
 El diseño evita prometer “exactly once” de extremo a extremo. La propiedad real es entrega al menos una vez más consumidores idempotentes y cambios locales transaccionales.
 
-## 10. Retries y DLQ: la limitación actual
+## 10. Retries y DLQ: política acotada
 
-### Contrato deseado
+### Contrato aplicado
 
-El contrato de eventos describe una política futura de hasta tres reintentos después del intento inicial, cuatro intentos totales, con retrasos crecientes y un contador en headers o mecanismo equivalente. Los errores permanentes deben ir directamente a DLQ.
+El contrato de eventos permite hasta tres reintentos después del intento inicial, cuatro intentos totales, con retrasos crecientes y un contador en headers o mecanismo equivalente. Logistics y notifications usan colas de retry con TTL de 1 s, 5 s y 15 s. Los errores permanentes deben ir directamente a DLQ.
 
 ### Implementación actual
 
-Los consumidores sí declaran:
+Los consumidores declaran:
 
 - exchange durable `platform.events`;
 - exchange durable `platform.events.dlx`;
 - colas y DLQ durables por consumidor;
-- rechazo sin reencolado de errores de procesamiento;
-- conservación del envelope y metadatos de broker para inspección.
+- tres colas de retry durables con TTL y DLX de retorno;
+- clasificación de mensajes malformed, errores permanentes y errores transitorios;
+- publicación confirmada antes del ACK;
+- conservación del envelope, identidad AMQP y metadatos de retry acotados.
 
-Todavía no implementan delayed retries automáticos. Por eso un fallo no pasa actualmente por una secuencia automática de backoff creciente; se dirige a la DLQ para inspección o replay controlado. Tampoco existe una política de reconexión automática completa para RabbitMQ.
+Un fallo transitorio pasa por la siguiente cola de retry. El TTL lo mantiene fuera del consumidor durante el backoff y el DLX lo devuelve a la routing key original. Después del tercer retry, o ante un mensaje malformed o un fallo permanente de validación/regla de negocio, se publica en la DLQ final. La publicación y el ACK son operaciones separadas: si cualquiera falla, el mensaje original no se considera completado y puede redeliverarse.
 
-### Por qué es una limitación consciente
+### Por qué es una política acotada
 
-La primera etapa prioriza demostrar ownership, transacciones, outbox, inbox, ACK y confirms. Implementar retries reales exige resolver también:
+La primera etapa prioriza demostrar ownership, transacciones, outbox, inbox, ACK y confirms. Esta política resuelve el backoff básico sin afirmar exactly-once:
 
-- clasificación confiable de errores transitorios y permanentes;
-- headers y conteo de intentos;
-- TTL y colas de retry o una estrategia equivalente;
-- backoff creciente sin busy-loop;
-- límites de concurrencia y orden causal;
-- reconexión de canales de consumo y publicación;
-- observabilidad de cada intento;
-- replay seguro desde DLQ.
+- Los headers son específicos de cada servicio (`x-logistics-retry-*` o `x-notifications-retry-*`); no se interpretan headers de otro bounded context.
+- Solo se conserva metadata operacional acotada: nunca credenciales, headers arbitrarios ni el payload completo en logs o metadata de retry.
+- Un mensaje duplicado sigue siendo posible después de una publicación confirmada y un ACK fallido; la inbox local evita repetir el efecto de negocio.
+- Las DLQ siguen requiriendo inspección y replay controlado.
 
-Añadir solo un `nack` con reencolado podría producir un loop rápido y ocultar el problema. Por eso la versión actual prefiere una DLQ visible y controlada antes que fingir una política de retry completa.
+Añadir solo un `nack` con reencolado produciría un loop rápido y ocultaría el problema. Las colas TTL hacen visible el backoff y mantienen un límite explícito, a cambio de agregar topología, configuración y una ventana de duplicación que la idempotencia debe absorber.
 
-### Qué se haría después
+### Qué queda para después
 
-1. Clasificar errores y definir el contador de intentos.
-2. Agregar colas de retry con retrasos crecientes o una topología equivalente.
-3. Mantener el `event_id` original y los metadatos de causalidad.
-4. Agregar reconexión y recreación de canales.
-5. Añadir métricas, logs estructurados y una herramienta de replay con límites.
-6. Probar duplicados, reinicios y agotamiento de retries en un smoke test automatizado.
+1. Agregar reconexión y recreación de canales.
+2. Añadir métricas, trazas y una herramienta de replay con límites.
+3. Probar reinicios, backpressure y recuperación de credenciales en un entorno operativo.
 
 ## 11. Docker y la infraestructura local
 
@@ -1050,11 +1045,11 @@ Con `event_version`. La versión 1 es obligatoria en el envelope. Cambios incomp
 
 ### ¿Cómo se manejan los errores permanentes?
 
-Se rechazan sin reencolar y se envían a la DLQ del consumidor para inspección y replay controlado. La política de delayed retries para errores transitorios todavía no está implementada.
+Se publican directamente en la DLQ del consumidor, sin consumir etapas de retry, para inspección y replay controlado. Los errores transitorios sí usan hasta tres delayed retries con backoff de 1 s, 5 s y 15 s.
 
 ### ¿Qué cambiaría en producción?
 
-Como mínimo: autenticación, secretos reales, TLS, observabilidad, alertas, backups, despliegue, política de retries con backoff, reconexión, replay seguro y un API Gateway si una necesidad concreta lo justifica. Los contenedores locales ya existen, pero no resuelven esos requisitos de producción.
+Como mínimo: autenticación, secretos reales, TLS, observabilidad, alertas, backups, despliegue, operación de los retries acotados, reconexión, replay seguro y un API Gateway si una necesidad concreta lo justifica. Los contenedores locales ya existen, pero no resuelven esos requisitos de producción.
 
 ## 15. Glosario final
 
@@ -1095,7 +1090,7 @@ Estas decisiones no están implementadas en la etapa actual:
 2. **Autenticación:** definir identidad, autorización, propagación de credenciales y protección de las APIs públicas.
 3. **Observabilidad:** agregar logs estructurados, métricas, trazas distribuidas, correlation IDs visibles y alertas.
 4. **API Gateway eventual:** introducirlo solo si una necesidad concreta de API pública, políticas de borde o agregación lo justifica.
-5. **Retries con backoff:** implementar delayed retries, clasificación de errores, conteo de intentos y replay seguro.
+5. **Operación de retries:** agregar métricas, replay seguro y políticas operativas sobre el backoff ya implementado.
 6. **Reconexión:** agregar recuperación automática de conexiones y canales RabbitMQ, con pruebas de reinicio y backpressure.
 
 Cada punto debe convertirse en una decisión revisable con alcance, contrato, costo y pruebas. No debe agregarse solo porque sea una pieza habitual de una arquitectura de microservicios.

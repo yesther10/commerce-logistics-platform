@@ -137,7 +137,7 @@ This stack intentionally does not provide:
 - production credentials, secret management, TLS, backups, or external provider integrations;
 - an API Gateway, authentication, rate limiting, or centralized observability;
 - production migration orchestration, rolling deployment, autoscaling, or resource policies;
-- delayed automatic RabbitMQ retries or full connection/channel recovery;
+- full RabbitMQ connection/channel recovery or replay automation; the logistics and notifications workers use bounded 1s/5s/15s delayed retry queues;
 - real payment, carrier, email, SMS, or push delivery.
 
-Consumers use durable topologies, manual acknowledgements, publisher confirms, local deduplication, and DLQs as documented in [`../../docs/events.md`](../../docs/events.md). Failed messages still require controlled DLQ inspection/replay. The full containerized smoke flow should be treated as local integration verification, not a production readiness signal.
+Consumers use additive durable topologies, manual acknowledgements, publisher confirms, local deduplication, bounded retries, and DLQs as documented in [`../../docs/events.md`](../../docs/events.md). Retry queues use TTL plus a DLX; malformed/permanent failures bypass retries, and retry/final-DLQ publication is confirmed before ACK. A confirmed publication followed by an ACK failure can redeliver the original message, so the flow remains at-least-once. Failed messages still require controlled DLQ inspection/replay. The full containerized smoke flow should be treated as local integration verification, not a production readiness signal.

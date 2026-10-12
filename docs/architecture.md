@@ -125,7 +125,7 @@ The workflow is intentionally not a distributed transaction. Each consumer commi
 - A real carrier, shipping-rate provider, or route-optimization integration.
 - A notification provider integration.
 - Shared databases, shared domain libraries, or synchronous service-to-service HTTP for the lifecycle.
-- Real notification providers, delayed automatic retries, an API Gateway, and production deployment orchestration.
+- Real notification providers, full RabbitMQ connection recovery, an API Gateway, and production deployment orchestration.
 
 ## Decision: no API Gateway initially
 
