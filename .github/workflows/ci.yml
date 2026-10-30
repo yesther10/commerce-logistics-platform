@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate default Compose configuration
         run: docker compose --env-file .env.example config --quiet
@@ -32,7 +32,7 @@ jobs:
         working-directory: services/commerce-laravel
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up PHP 8.4
         uses: shivammathur/setup-php@v2
@@ -53,7 +53,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Composer downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-php-8.4-composer-${{ hashFiles('services/commerce-laravel/composer.lock') }}
@@ -76,10 +76,10 @@ jobs:
         working-directory: services/logistics-go
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: services/logistics-go/go.mod
           cache-dependency-path: services/logistics-go/go.sum
@@ -101,10 +101,10 @@ jobs:
         working-directory: services/notifications-nestjs
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Node.js 24
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -135,7 +135,7 @@ jobs:
       - nestjs
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Start the full ephemeral Compose stack
         run: docker compose --env-file .env.example --profile app up -d --build
